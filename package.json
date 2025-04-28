@@ -2,7 +2,6 @@
   "name": "my-dashboard",
   "version": "0.1.0",
   "private": true,
-  "proxy": "http://127.0.0.1:1087",
   "dependencies": {
     "@google/genai": "^0.10.0",
     "@testing-library/dom": "^10.4.0",
