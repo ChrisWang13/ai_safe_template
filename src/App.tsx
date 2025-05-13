@@ -117,6 +117,39 @@ const parseAIArray = (raw:string) => {
   return Function('"use strict"; return (' + code + ');')();
 };
 
+
+/**
+ * Call Gemini with prompt and parse out a JS array, retrying on parse errors.
+ */
+async function fetchAIArray<T>(
+  prompt: string,
+  maxRetries = 3,
+  delayMs = 0
+): Promise<T[]> {
+  let lastErr: any = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const resp = await ai.models.generateContent({
+        model: 'gemini-2.0-flash',
+        contents: prompt,
+        config: { tools: [{ googleSearch: {} }] },
+      });
+      const text = (resp.text || '').trim();
+      console.log('AI response:', text);
+      return parseAIArray(text);
+    } catch (err) {
+      lastErr = err;
+      console.warn(`Attempt ${attempt} failed to parse AI response:`, err);
+      if (attempt < maxRetries) {
+        // wait a bit before retrying
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+
 const App: FC = () => {
   /* ——— 状态区 ——— */
   const [range, setRange] = useState<DateRange>(null);
@@ -177,14 +210,7 @@ const App: FC = () => {
           `使用google Search搜索 ${start} 至 ${end} 期间与"虚假新闻”, "辟谣”相关的大陆中文条目结果. 请仅返回一个 JavaScript 数组（不要包裹代码块，不要 const 声明，不要注释）。` +
           `格式示例: [{ rank: 1, name: '中文虚假新闻'}, ...], rank 必须 1-5 递增.`;
 
-        const fakeNewsResp = await ai.models.generateContent({
-          model: 'gemini-2.0-flash',
-          contents: fakeNewsPrompt,
-          config: { tools: [{ googleSearch: {} }] },
-        });
-        
-        console.log('虚假新闻数据:', fakeNewsResp.text);
-        const fakeNewsList = parseAIArray((fakeNewsResp.text || '').trim());
+        const fakeNewsList = await fetchAIArray<{rank:number;name:string;}>(fakeNewsPrompt);
         const fakeNewsData = fakeNewsList.map((item: any) => ({
           ...item,
           url: `https://www.baidu.com/s?tn=news&word=${encodeURIComponent(item.name)}`,
@@ -228,18 +254,10 @@ const App: FC = () => {
     (async () => {
       try {
         const douyinPrompt =
-          `使用google Search搜索 ${start} 至 ${end} 期间的热门搜索舆情的大陆中文条目结果。请仅返回一个 JavaScript 数组（不要包裹代码块，不要 const 声明，不要注释）。` +
+          `使用google Search搜索 ${start} 至 ${end} 期间的热门搜索的大陆中文条目结果。请仅返回一个 JavaScript 数组（不要包裹代码块，不要 const 声明，不要注释）。` +
           `格式示例：[{ rank: 1, name: '中文热门搜索舆情', likes: '100万'}, ...], rank 1-5 递增， likes字段数值依次递减。`;
 
-        const douyinResp = await ai.models.generateContent({
-          model: 'gemini-2.0-flash',
-          contents: douyinPrompt,
-          config: { tools: [{ googleSearch: {} }] },
-        });
-        
-        console.log('舆论热议排行数据:', douyinResp.text);
-
-        const douyinList = parseAIArray((douyinResp.text || '').trim());
+        const douyinList = await fetchAIArray<{rank:number;name:string;likes:string;}>(douyinPrompt);
         const douyinData = douyinList.map((item: any) => ({
           ...item,
           url: `https://www.baidu.com/s?tn=news&word=${encodeURIComponent(item.name)}`,
