@@ -23,7 +23,7 @@ const { RangePicker } = DatePicker;
 
 /* ——— Google Gemini ——— */
 const ai = new GoogleGenAI({
-  apiKey: 'AIzaSyBqaJ1dK8F9klHNw-AVIoEn9KkTG_dN53k',
+  apiKey: '',
 });
 
 /* ——— 类型定义 ——— */
