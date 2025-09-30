@@ -291,6 +291,204 @@ app.get('/api/platforms', async (req, res) => {
   }
 });
 
+// Helper function to convert data to CSV format
+function convertToCSV(data, headers) {
+  if (!data || data.length === 0) return '';
+
+  const csvHeaders = headers.join(',');
+  const csvRows = data.map(row =>
+    headers.map(header => {
+      const value = row[header];
+      // Handle null/undefined, escape quotes, wrap strings with commas
+      if (value === null || value === undefined) return '';
+      const stringValue = String(value);
+      if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
+        return `"${stringValue.replace(/"/g, '""')}"`;
+      }
+      return stringValue;
+    }).join(',')
+  );
+
+  return [csvHeaders, ...csvRows].join('\n');
+}
+
+// Export deepfakes data
+app.get('/api/export/deepfakes', async (req, res) => {
+  try {
+    const { error, value } = Joi.object({
+      startDate: Joi.date().iso().required(),
+      endDate: Joi.date().iso().min(Joi.ref('startDate')).required(),
+      format: Joi.string().valid('csv', 'json').default('csv'),
+      mediaType: Joi.string().valid('photo', 'video', 'all').default('all'),
+      minConfidence: Joi.number().min(0).max(1).default(0)
+    }).validate(req.query);
+
+    if (error) {
+      return res.status(400).json({ error: error.details[0].message });
+    }
+
+    const { startDate, endDate, format, mediaType, minConfidence } = value;
+
+    let query = `
+      SELECT
+        id, media_type, media_url, title, description,
+        confidence_score, detection_method, source_platform,
+        DATE_FORMAT(upload_date, '%Y-%m-%d %H:%i:%s') as upload_date,
+        DATE_FORMAT(detected_date, '%Y-%m-%d %H:%i:%s') as detected_date,
+        is_verified
+      FROM deepfake_media
+      WHERE detected_date BETWEEN ? AND ?
+        AND confidence_score >= ?
+    `;
+
+    const queryParams = [startDate, endDate, minConfidence];
+
+    if (mediaType !== 'all') {
+      query += ' AND media_type = ?';
+      queryParams.push(mediaType);
+    }
+
+    query += ' ORDER BY detected_date DESC, confidence_score DESC';
+
+    const [rows] = await pool.execute(query, queryParams);
+
+    if (format === 'csv') {
+      const headers = [
+        'id', 'media_type', 'media_url', 'title', 'description',
+        'confidence_score', 'detection_method', 'source_platform',
+        'upload_date', 'detected_date', 'is_verified'
+      ];
+      const csv = convertToCSV(rows, headers);
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=deepfakes_${startDate}_${endDate}.csv`);
+      res.send(csv);
+    } else {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=deepfakes_${startDate}_${endDate}.json`);
+      res.json({
+        exportDate: new Date().toISOString(),
+        period: { startDate, endDate },
+        filters: { mediaType, minConfidence },
+        totalRecords: rows.length,
+        data: rows
+      });
+    }
+
+  } catch (error) {
+    console.error('Error exporting deepfakes:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Export statistics data
+app.get('/api/export/stats', async (req, res) => {
+  try {
+    const { error, value } = Joi.object({
+      startDate: Joi.date().iso().required(),
+      endDate: Joi.date().iso().min(Joi.ref('startDate')).required(),
+      format: Joi.string().valid('csv', 'json').default('csv')
+    }).validate(req.query);
+
+    if (error) {
+      return res.status(400).json({ error: error.details[0].message });
+    }
+
+    const { startDate, endDate, format } = value;
+
+    // Get aggregated statistics
+    const [stats] = await pool.execute(`
+      SELECT
+        DATE(detected_date) as date,
+        COUNT(CASE WHEN media_type = 'photo' THEN 1 END) as photos_count,
+        COUNT(CASE WHEN media_type = 'video' THEN 1 END) as videos_count,
+        AVG(confidence_score) as avg_confidence,
+        COUNT(*) as total_count,
+        COUNT(CASE WHEN is_verified = 1 THEN 1 END) as verified_count
+      FROM deepfake_media
+      WHERE detected_date BETWEEN ? AND ?
+      GROUP BY DATE(detected_date)
+      ORDER BY date ASC
+    `, [startDate, endDate]);
+
+    if (format === 'csv') {
+      const headers = ['date', 'photos_count', 'videos_count', 'avg_confidence', 'total_count', 'verified_count'];
+      const csv = convertToCSV(stats, headers);
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=stats_${startDate}_${endDate}.csv`);
+      res.send(csv);
+    } else {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=stats_${startDate}_${endDate}.json`);
+      res.json({
+        exportDate: new Date().toISOString(),
+        period: { startDate, endDate },
+        totalDays: stats.length,
+        data: stats
+      });
+    }
+
+  } catch (error) {
+    console.error('Error exporting stats:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Export platform statistics
+app.get('/api/export/platforms', async (req, res) => {
+  try {
+    const { error, value } = Joi.object({
+      startDate: Joi.date().iso().required(),
+      endDate: Joi.date().iso().min(Joi.ref('startDate')).required(),
+      format: Joi.string().valid('csv', 'json').default('csv')
+    }).validate(req.query);
+
+    if (error) {
+      return res.status(400).json({ error: error.details[0].message });
+    }
+
+    const { startDate, endDate, format } = value;
+
+    const [platforms] = await pool.execute(`
+      SELECT
+        source_platform,
+        COUNT(*) as total_count,
+        COUNT(CASE WHEN media_type = 'photo' THEN 1 END) as photos_count,
+        COUNT(CASE WHEN media_type = 'video' THEN 1 END) as videos_count,
+        AVG(confidence_score) as avg_confidence,
+        MAX(confidence_score) as max_confidence,
+        COUNT(CASE WHEN is_verified = 1 THEN 1 END) as verified_count
+      FROM deepfake_media
+      WHERE detected_date BETWEEN ? AND ?
+      GROUP BY source_platform
+      ORDER BY total_count DESC
+    `, [startDate, endDate]);
+
+    if (format === 'csv') {
+      const headers = ['source_platform', 'total_count', 'photos_count', 'videos_count', 'avg_confidence', 'max_confidence', 'verified_count'];
+      const csv = convertToCSV(platforms, headers);
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=platforms_${startDate}_${endDate}.csv`);
+      res.send(csv);
+    } else {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=platforms_${startDate}_${endDate}.json`);
+      res.json({
+        exportDate: new Date().toISOString(),
+        period: { startDate, endDate },
+        totalPlatforms: platforms.length,
+        data: platforms
+      });
+    }
+
+  } catch (error) {
+    console.error('Error exporting platform stats:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);

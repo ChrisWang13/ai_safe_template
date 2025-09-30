@@ -12,11 +12,13 @@ import {
   Spin,
   Skeleton,
   message,
+  Space,
 } from 'antd';
 import type { RangePickerProps } from 'antd/lib/date-picker';
 import ReactECharts from 'echarts-for-react';
 import type { EChartsOption } from 'echarts';
 import { GoogleGenAI } from '@google/genai';
+import ExportButton from './components/ExportButton';
 
 const { Header, Content } = Layout;
 const { RangePicker } = DatePicker;
@@ -390,12 +392,15 @@ const App: FC = () => {
   /* ——— 渲染 ——— */
   return (
     <Layout style={{ minHeight: '100vh', background: chartBG }}>
-      {/* Header：日期选择器 */}
+      {/* Header：日期选择器 + 导出按钮 */}
       <Header
         style={{
           background: chartBG,
           padding: 16,
           borderBottom: '1px solid #1f2a4a',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 16,
         }}
       >
         <RangePicker
@@ -409,6 +414,24 @@ const App: FC = () => {
           }}
           dropdownClassName="dark-range-picker"
         />
+        <Space>
+          <ExportButton
+            exportType="deepfakes"
+            startDate={range?.[0] || ''}
+            endDate={range?.[1] || ''}
+            disabled={!range}
+            buttonText="导出虚假新闻"
+            style={{ background: '#e74c3c', borderColor: '#e74c3c' }}
+          />
+          <ExportButton
+            exportType="stats"
+            startDate={range?.[0] || ''}
+            endDate={range?.[1] || ''}
+            disabled={!range}
+            buttonText="导出统计数据"
+            style={{ background: '#3498db', borderColor: '#3498db' }}
+          />
+        </Space>
       </Header>
 
       {/* 主内容区 */}
