@@ -13,6 +13,7 @@ import {
   Skeleton,
   message,
   Space,
+  Button,
 } from 'antd';
 import type { RangePickerProps } from 'antd/lib/date-picker';
 import ReactECharts from 'echarts-for-react';
@@ -20,7 +21,10 @@ import type { EChartsOption } from 'echarts';
 import { GoogleGenAI } from '@google/genai';
 import ExportButton from './components/ExportButton';
 import FilterPanel, { FilterState } from './components/FilterPanel';
+import AlertConfig, { AlertSettings } from './components/AlertConfig';
+import NotificationCenter from './components/NotificationCenter';
 import { deepfakeAPI } from './services/deepfakeAPI';
+import { useAlertMonitoring } from './hooks/useAlertMonitoring';
 
 const { Header, Content } = Layout;
 const { RangePicker } = DatePicker;
@@ -178,6 +182,50 @@ const App: FC = () => {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearchMode, setIsSearchMode] = useState(false);
 
+  /* 警报系统状态 */
+  const [alertConfigVisible, setAlertConfigVisible] = useState(false);
+  const [alertSettings, setAlertSettings] = useState<AlertSettings>(() => {
+    // Load from localStorage
+    const stored = localStorage.getItem('alertSettings');
+    if (stored) {
+      try {
+        return JSON.parse(stored);
+      } catch {
+        return {
+          enabled: false,
+          minConfidence: 90,
+          checkInterval: 5,
+          platforms: [],
+          verifiedOnly: false,
+          enableSound: true,
+          enableBrowserNotifications: true,
+          spikeDetection: true,
+          spikeThreshold: 50,
+        };
+      }
+    }
+    return {
+      enabled: false,
+      minConfidence: 90,
+      checkInterval: 5,
+      platforms: [],
+      verifiedOnly: false,
+      enableSound: true,
+      enableBrowserNotifications: true,
+      spikeDetection: true,
+      spikeThreshold: 50,
+    };
+  });
+
+  // Use alert monitoring hook
+  const {
+    notifications,
+    isMonitoring,
+    markAsRead,
+    markAllAsRead,
+    clearAll,
+  } = useAlertMonitoring(alertSettings, availablePlatforms);
+
   /* 折线图 & 柱状图数据 */
   const [dates, setDates] = useState<string[]>([]);
   const [dynamicNews, setDynamicNews] = useState<DynamicNewsMetrics>({
@@ -216,6 +264,12 @@ const App: FC = () => {
     };
     loadPlatforms();
   }, []);
+
+  /* ——— 警报设置保存 ——— */
+  const handleAlertSettingsSave = (newSettings: AlertSettings) => {
+    setAlertSettings(newSettings);
+    localStorage.setItem('alertSettings', JSON.stringify(newSettings));
+  };
 
   /* ——— 筛选处理函数 ——— */
   const handleFilterChange = async (newFilters: FilterState) => {
@@ -495,7 +549,7 @@ const App: FC = () => {
           }}
           dropdownClassName="dark-range-picker"
         />
-        <Space>
+        <Space style={{ marginLeft: 'auto' }}>
           <ExportButton
             exportType="deepfakes"
             startDate={range?.[0] || ''}
@@ -512,8 +566,34 @@ const App: FC = () => {
             buttonText="导出统计数据"
             style={{ background: '#3498db', borderColor: '#3498db' }}
           />
+          <Button
+            type="default"
+            onClick={() => setAlertConfigVisible(true)}
+            style={{
+              background: isMonitoring ? '#27ae60' : '#2a3b6f',
+              color: '#fff',
+              border: isMonitoring ? '1px solid #27ae60' : '1px solid #3498db',
+            }}
+          >
+            {isMonitoring ? '⚡ 监控中' : '⚙️ 警报设置'}
+          </Button>
+          <NotificationCenter
+            notifications={notifications}
+            onMarkAsRead={markAsRead}
+            onMarkAllAsRead={markAllAsRead}
+            onClearAll={clearAll}
+          />
         </Space>
       </Header>
+
+      {/* 警报配置弹窗 */}
+      <AlertConfig
+        visible={alertConfigVisible}
+        onClose={() => setAlertConfigVisible(false)}
+        onSave={handleAlertSettingsSave}
+        availablePlatforms={availablePlatforms}
+        currentSettings={alertSettings}
+      />
 
       {/* 主内容区 */}
       <Content style={{ margin: 16 }}>

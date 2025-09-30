@@ -525,6 +525,148 @@ app.get('/api/platforms/list', async (req, res) => {
   }
 });
 
+// Check for new alerts based on criteria
+app.get('/api/alerts/check', async (req, res) => {
+  try {
+    const { error, value } = Joi.object({
+      minConfidence: Joi.number().min(0).max(1).default(0.9),
+      lastCheckTime: Joi.date().iso().optional(),
+      platforms: Joi.string().optional(), // comma-separated platforms
+      verifiedOnly: Joi.boolean().optional()
+    }).validate(req.query);
+
+    if (error) {
+      return res.status(400).json({ error: error.details[0].message });
+    }
+
+    const { minConfidence, lastCheckTime, platforms, verifiedOnly } = value;
+
+    // Query for new high-confidence detections
+    let query = `
+      SELECT
+        id, media_type, media_url, title, confidence_score,
+        source_platform, detected_date, is_verified
+      FROM deepfake_media
+      WHERE confidence_score >= ?
+    `;
+
+    const queryParams = [minConfidence];
+
+    if (lastCheckTime) {
+      query += ' AND detected_date > ?';
+      queryParams.push(lastCheckTime);
+    } else {
+      // Default to last 24 hours if no lastCheckTime provided
+      query += ' AND detected_date > DATE_SUB(NOW(), INTERVAL 24 HOUR)';
+    }
+
+    if (platforms) {
+      const platformList = platforms.split(',');
+      query += ` AND source_platform IN (${platformList.map(() => '?').join(',')})`;
+      queryParams.push(...platformList);
+    }
+
+    if (verifiedOnly) {
+      query += ' AND is_verified = 1';
+    }
+
+    query += ' ORDER BY detected_date DESC, confidence_score DESC LIMIT 50';
+
+    const [alerts] = await pool.execute(query, queryParams);
+
+    // Get daily statistics for spike detection
+    const [dailyStats] = await pool.execute(`
+      SELECT
+        DATE(detected_date) as date,
+        COUNT(*) as count,
+        AVG(confidence_score) as avg_confidence
+      FROM deepfake_media
+      WHERE detected_date >= DATE_SUB(NOW(), INTERVAL 7 DAYS)
+      GROUP BY DATE(detected_date)
+      ORDER BY date DESC
+    `);
+
+    // Calculate if there's a spike (today's count > 150% of 7-day average)
+    let spikeDetected = false;
+    let spikeInfo = null;
+
+    if (dailyStats.length > 1) {
+      const todayCount = dailyStats[0].count;
+      const avgCount = dailyStats.slice(1).reduce((sum, stat) => sum + stat.count, 0) / (dailyStats.length - 1);
+
+      if (todayCount > avgCount * 1.5) {
+        spikeDetected = true;
+        spikeInfo = {
+          todayCount,
+          avgCount: Math.round(avgCount),
+          percentIncrease: Math.round(((todayCount - avgCount) / avgCount) * 100)
+        };
+      }
+    }
+
+    res.json({
+      alerts,
+      totalAlerts: alerts.length,
+      spikeDetected,
+      spikeInfo,
+      checkTime: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error checking alerts:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get recent statistics for monitoring
+app.get('/api/monitoring/recent', async (req, res) => {
+  try {
+    const { error, value } = Joi.object({
+      hours: Joi.number().integer().min(1).max(168).default(24)
+    }).validate(req.query);
+
+    if (error) {
+      return res.status(400).json({ error: error.details[0].message });
+    }
+
+    const { hours } = value;
+
+    const [recentDetections] = await pool.execute(`
+      SELECT
+        COUNT(*) as total_count,
+        COUNT(CASE WHEN media_type = 'photo' THEN 1 END) as photo_count,
+        COUNT(CASE WHEN media_type = 'video' THEN 1 END) as video_count,
+        AVG(confidence_score) as avg_confidence,
+        MAX(confidence_score) as max_confidence,
+        COUNT(CASE WHEN confidence_score >= 0.9 THEN 1 END) as high_confidence_count
+      FROM deepfake_media
+      WHERE detected_date >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+    `, [hours]);
+
+    const [platformBreakdown] = await pool.execute(`
+      SELECT
+        source_platform,
+        COUNT(*) as count
+      FROM deepfake_media
+      WHERE detected_date >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+      GROUP BY source_platform
+      ORDER BY count DESC
+      LIMIT 5
+    `, [hours]);
+
+    res.json({
+      period: `Last ${hours} hours`,
+      summary: recentDetections[0],
+      platforms: platformBreakdown,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching monitoring data:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Export platform statistics
 app.get('/api/export/platforms', async (req, res) => {
   try {
