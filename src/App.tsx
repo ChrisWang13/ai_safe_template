@@ -19,6 +19,8 @@ import ReactECharts from 'echarts-for-react';
 import type { EChartsOption } from 'echarts';
 import { GoogleGenAI } from '@google/genai';
 import ExportButton from './components/ExportButton';
+import FilterPanel, { FilterState } from './components/FilterPanel';
+import { deepfakeAPI } from './services/deepfakeAPI';
 
 const { Header, Content } = Layout;
 const { RangePicker } = DatePicker;
@@ -164,6 +166,18 @@ const App: FC = () => {
   const [fakeNewsData, setFakeNewsData] = useState<any[]>([]);
   const [douyinData, setDouyinData] = useState<any[]>([]);
 
+  /* 筛选相关状态 */
+  const [filters, setFilters] = useState<FilterState>({
+    searchQuery: '',
+    confidenceRange: [0, 100],
+    platforms: [],
+    mediaType: 'all',
+    verifiedOnly: undefined,
+  });
+  const [availablePlatforms, setAvailablePlatforms] = useState<string[]>([]);
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearchMode, setIsSearchMode] = useState(false);
+
   /* 折线图 & 柱状图数据 */
   const [dates, setDates] = useState<string[]>([]);
   const [dynamicNews, setDynamicNews] = useState<DynamicNewsMetrics>({
@@ -189,6 +203,73 @@ const App: FC = () => {
     !current ||
     current.isAfter(dayjs(), 'day') ||
     current.isBefore(dayjs('2018-01-01', 'YYYY-MM-DD'), 'day');
+
+  /* ——— 加载平台列表 ——— */
+  useEffect(() => {
+    const loadPlatforms = async () => {
+      try {
+        const response = await deepfakeAPI.getPlatformList();
+        setAvailablePlatforms(response.platforms);
+      } catch (error) {
+        console.error('Failed to load platforms:', error);
+      }
+    };
+    loadPlatforms();
+  }, []);
+
+  /* ——— 筛选处理函数 ——— */
+  const handleFilterChange = async (newFilters: FilterState) => {
+    setFilters(newFilters);
+
+    // If search query exists, perform search
+    if (newFilters.searchQuery.trim()) {
+      setLoadingFake(true);
+      setIsSearchMode(true);
+
+      try {
+        const response = await deepfakeAPI.search({
+          query: newFilters.searchQuery,
+          startDate: range?.[0],
+          endDate: range?.[1],
+          mediaType: newFilters.mediaType === 'all' ? undefined : newFilters.mediaType,
+          minConfidence: newFilters.confidenceRange[0] / 100,
+          platform: newFilters.platforms.length > 0 ? newFilters.platforms[0] : undefined,
+          verified: newFilters.verifiedOnly,
+          limit: 50,
+        });
+
+        // Apply additional filters locally
+        let filtered = response.results;
+
+        // Filter by confidence range
+        filtered = filtered.filter(
+          (item) =>
+            item.confidence_score * 100 >= newFilters.confidenceRange[0] &&
+            item.confidence_score * 100 <= newFilters.confidenceRange[1]
+        );
+
+        // Filter by platforms (if multiple selected)
+        if (newFilters.platforms.length > 0) {
+          filtered = filtered.filter((item) =>
+            newFilters.platforms.includes(item.source_platform)
+          );
+        }
+
+        setSearchResults(filtered);
+        message.success(`找到 ${filtered.length} 条结果`);
+      } catch (error) {
+        console.error('Search failed:', error);
+        message.error('搜索失败，请稍后重试');
+        setSearchResults([]);
+      } finally {
+        setLoadingFake(false);
+      }
+    } else {
+      // Reset search mode if no query
+      setIsSearchMode(false);
+      setSearchResults([]);
+    }
+  };
 
   /* ——— 核心：选择日期后，调用 AI 并生成所有数据 ——— */
   const onDateChange: RangePickerProps['onChange'] = (_, datesPicked) => {
@@ -436,6 +517,109 @@ const App: FC = () => {
 
       {/* 主内容区 */}
       <Content style={{ margin: 16 }}>
+        {/* 筛选面板 */}
+        <FilterPanel
+          onFilterChange={handleFilterChange}
+          availablePlatforms={availablePlatforms}
+        />
+
+        {/* 搜索结果 */}
+        {isSearchMode && (
+          <Card
+            size="small"
+            title={
+              <span style={{ color: '#fff' }}>
+                🔎 搜索结果: "{filters.searchQuery}"
+              </span>
+            }
+            style={{
+              marginBottom: 16,
+              background: '#1f2433',
+              borderRadius: 8,
+            }}
+            headStyle={{ color: '#fff', borderBottom: '1px solid #2a3b6f' }}
+          >
+            <Table
+              loading={loadingFake}
+              className="dark-table"
+              columns={[
+                {
+                  title: '媒体类型',
+                  dataIndex: 'media_type',
+                  key: 'media_type',
+                  align: 'center' as const,
+                  render: (type: string) => (
+                    <span style={{ color: type === 'photo' ? '#f4d03f' : '#5dade2' }}>
+                      {type === 'photo' ? '📷 图片' : '🎥 视频'}
+                    </span>
+                  ),
+                },
+                {
+                  title: '标题',
+                  dataIndex: 'title',
+                  key: 'title',
+                  align: 'center' as const,
+                  render: (text: string, record: any) => (
+                    <a
+                      href={record.media_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: '#3498db' }}
+                    >
+                      {text || '未命名'}
+                    </a>
+                  ),
+                },
+                {
+                  title: '置信度',
+                  dataIndex: 'confidence_score',
+                  key: 'confidence_score',
+                  align: 'center' as const,
+                  render: (score: number) => (
+                    <span
+                      style={{
+                        color: score > 0.8 ? '#e74c3c' : score > 0.5 ? '#f39c12' : '#27ae60',
+                        fontWeight: 'bold',
+                      }}
+                    >
+                      {(score * 100).toFixed(1)}%
+                    </span>
+                  ),
+                  sorter: (a: any, b: any) => a.confidence_score - b.confidence_score,
+                },
+                {
+                  title: '来源平台',
+                  dataIndex: 'source_platform',
+                  key: 'source_platform',
+                  align: 'center' as const,
+                },
+                {
+                  title: '检测日期',
+                  dataIndex: 'detected_date',
+                  key: 'detected_date',
+                  align: 'center' as const,
+                  render: (date: string) => dayjs(date).format('YYYY-MM-DD'),
+                },
+                {
+                  title: '已验证',
+                  dataIndex: 'is_verified',
+                  key: 'is_verified',
+                  align: 'center' as const,
+                  render: (verified: boolean) => (
+                    <span style={{ color: verified ? '#27ae60' : '#95a5a6' }}>
+                      {verified ? '✓' : '✗'}
+                    </span>
+                  ),
+                },
+              ]}
+              dataSource={searchResults}
+              rowKey="id"
+              pagination={{ pageSize: 10 }}
+              style={{ background: '#2b3350' }}
+            />
+          </Card>
+        )}
+
         {dynamicNews.days === 0 ? (
           <Skeleton active paragraph={{ rows: 6 }} />
         ) : (

@@ -123,10 +123,47 @@ async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promi
   }
 }
 
+export interface SearchResult {
+  results: DeepfakeMedia[];
+  query: string;
+  total: number;
+}
+
+export interface PlatformListResponse {
+  platforms: string[];
+}
+
 export const deepfakeAPI = {
   // Health check
   async healthCheck() {
     return apiRequest<{ status: string; database: string; timestamp: string }>('/health');
+  },
+
+  // Search deepfakes by keyword
+  async search(params: {
+    query: string;
+    startDate?: string;
+    endDate?: string;
+    mediaType?: 'photo' | 'video' | 'all';
+    minConfidence?: number;
+    platform?: string;
+    verified?: boolean;
+    limit?: number;
+  }): Promise<SearchResult> {
+    const queryParams = new URLSearchParams();
+
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        queryParams.append(key, value.toString());
+      }
+    });
+
+    return apiRequest<SearchResult>(`/search?${queryParams}`);
+  },
+
+  // Get list of available platforms
+  async getPlatformList(): Promise<PlatformListResponse> {
+    return apiRequest<PlatformListResponse>('/platforms/list');
   },
 
   // Get deepfake media with filters

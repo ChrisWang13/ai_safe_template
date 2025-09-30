@@ -435,6 +435,96 @@ app.get('/api/export/stats', async (req, res) => {
   }
 });
 
+// Search deepfakes by keyword
+app.get('/api/search', async (req, res) => {
+  try {
+    const { error, value } = Joi.object({
+      query: Joi.string().min(1).required(),
+      startDate: Joi.date().iso().optional(),
+      endDate: Joi.date().iso().min(Joi.ref('startDate')).optional(),
+      mediaType: Joi.string().valid('photo', 'video', 'all').default('all'),
+      minConfidence: Joi.number().min(0).max(1).default(0),
+      platform: Joi.string().optional(),
+      verified: Joi.boolean().optional(),
+      limit: Joi.number().integer().min(1).max(100).default(50)
+    }).validate(req.query);
+
+    if (error) {
+      return res.status(400).json({ error: error.details[0].message });
+    }
+
+    const { query: searchQuery, startDate, endDate, mediaType, minConfidence, platform, verified, limit } = value;
+
+    let query = `
+      SELECT
+        id, media_type, media_url, thumbnail_url, title, description,
+        confidence_score, detection_method, source_platform, upload_date,
+        detected_date, is_verified, tags
+      FROM deepfake_media
+      WHERE (title LIKE ? OR description LIKE ? OR tags LIKE ?)
+        AND confidence_score >= ?
+    `;
+
+    const searchPattern = `%${searchQuery}%`;
+    const queryParams = [searchPattern, searchPattern, searchPattern, minConfidence];
+
+    if (startDate && endDate) {
+      query += ' AND detected_date BETWEEN ? AND ?';
+      queryParams.push(startDate, endDate);
+    }
+
+    if (mediaType !== 'all') {
+      query += ' AND media_type = ?';
+      queryParams.push(mediaType);
+    }
+
+    if (platform) {
+      query += ' AND source_platform = ?';
+      queryParams.push(platform);
+    }
+
+    if (verified !== undefined) {
+      query += ' AND is_verified = ?';
+      queryParams.push(verified);
+    }
+
+    query += ' ORDER BY confidence_score DESC, detected_date DESC LIMIT ?';
+    queryParams.push(limit);
+
+    const [rows] = await pool.execute(query, queryParams);
+
+    res.json({
+      results: rows,
+      query: searchQuery,
+      total: rows.length
+    });
+
+  } catch (error) {
+    console.error('Error searching deepfakes:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get list of available platforms
+app.get('/api/platforms/list', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT DISTINCT source_platform
+      FROM deepfake_media
+      WHERE source_platform IS NOT NULL
+      ORDER BY source_platform ASC
+    `);
+
+    res.json({
+      platforms: rows.map(row => row.source_platform)
+    });
+
+  } catch (error) {
+    console.error('Error fetching platform list:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Export platform statistics
 app.get('/api/export/platforms', async (req, res) => {
   try {
